@@ -49,18 +49,15 @@ try {
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'stall-app-default';
 
 // --- HELPER FUNCTIONS ---
-// Neuer Helfer: Holt immer 4 Wochen, gebündelt Mo-So, mit korrekter KW
 const get4Weeks = () => {
   const weeks = [];
   const now = new Date();
   
-  // Finde den Montag der aktuellen Woche
   const dayOfWeek = now.getDay(); // 0 = Sonntag, 1 = Montag
   const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
   const startOfThisWeek = new Date(now);
   startOfThisWeek.setDate(now.getDate() + diffToMonday);
   
-  // Helfer für die Kalenderwoche (ISO)
   const getWeekNumber = (d) => {
     const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
     const dayNum = date.getUTCDay() || 7;
@@ -88,10 +85,19 @@ const get4Weeks = () => {
   return weeks;
 };
 
+const STORAGE_KEY = 'stall_leikenberg_user';
+
 export default function StallApp() {
-  // Auth State
+  // Auth State (mit lokalem Speicher für dauerhaften Login)
   const [fbUser, setFbUser] = useState(null);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [loginForm, setLoginForm] = useState({ email: '', password: '', name: '' });
   const [authError, setAuthError] = useState('');
@@ -173,6 +179,25 @@ export default function StallApp() {
     return () => unsubs.forEach(unsub => unsub());
   }, [fbUser]);
 
+  // --- 3. GESPEICHERTEN NUTZER MIT FIRESTORE AKTUELL HALTEN ---
+  useEffect(() => {
+    if (!currentUser || profiles.length === 0) return;
+    const freshUser = profiles.find(p => p.id === currentUser.id);
+    if (freshUser) {
+      if (JSON.stringify(freshUser) !== JSON.stringify(currentUser)) {
+        setCurrentUser(freshUser);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(freshUser));
+        } catch (e) {}
+      }
+    } else {
+      setCurrentUser(null);
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch (e) {}
+    }
+  }, [profiles, currentUser]);
+
   // --- HELPER: SHOW TOAST ---
   const showToast = (msg, isError = false) => {
     setToast({ msg, isError });
@@ -204,10 +229,20 @@ export default function StallApp() {
     
     if (user) {
       setCurrentUser(user);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+      } catch (e) {}
       showToast(`Willkommen zurück, ${user.name}!`);
     } else {
       setAuthError('E-Mail oder Passwort falsch.');
     }
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {}
   };
 
   const handleRegister = async (e) => {
@@ -235,6 +270,9 @@ export default function StallApp() {
     
     setProfiles(prev => [...prev, newUser]);
     setCurrentUser(newUser);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newUser));
+    } catch (e) {}
     
     if (role === 'admin') {
       showToast('Admin-Konto erfolgreich erstellt!');
@@ -253,6 +291,9 @@ export default function StallApp() {
     }
     const updatedUser = { ...currentUser, password: newPassword };
     setCurrentUser(updatedUser);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedUser));
+    } catch (e) {}
     setNewPassword('');
     
     await syncToFirebase('profiles', currentUser.id, { password: newPassword });
@@ -534,7 +575,7 @@ export default function StallApp() {
             {currentUser.role === 'admin' ? <ShieldCheck className="w-3 h-3"/> : <User className="w-3 h-3"/>}
             {currentUser.name}
           </span>
-          <button onClick={() => setCurrentUser(null)} className="text-[10px] text-emerald-200 hover:text-white mt-1 font-bold underline">Logout</button>
+          <button onClick={handleLogout} className="text-[10px] text-emerald-200 hover:text-white mt-1 font-bold underline">Logout</button>
         </div>
       </header>
 
