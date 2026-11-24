@@ -71,7 +71,7 @@ export default function StallApp() {
   const [authError, setAuthError] = useState('');
   
   // Data State (Optimistic UI)
-  const [profiles, setProfiles] = useState([]); // Removed DEMO_USERS
+  const [profiles, setProfiles] = useState([]);
   const [horses, setHorses] = useState([]);
   const [messages, setMessages] = useState([]);
   const [shifts, setShifts] = useState([]);
@@ -87,6 +87,7 @@ export default function StallApp() {
   
   // --- Form States ---
   const [newMessage, setNewMessage] = useState('');
+  const [newPassword, setNewPassword] = useState(''); // NEW: Password Change State
   const [newBooking, setNewBooking] = useState({ type: 'Reitplatz', date: '', startTime: '', endTime: '', note: '' });
   const [newRequest, setNewRequest] = useState({ task: 'Misten', startDate: '', endDate: '', note: '' });
   const [newDamage, setNewDamage] = useState({ location: '', description: '' });
@@ -108,7 +109,7 @@ export default function StallApp() {
           try {
             await signInWithCustomToken(auth, __initial_auth_token);
           } catch (customTokenError) {
-            console.warn("Custom token failed (expected with custom Firebase config). Falling back to anonymous auth.", customTokenError);
+            console.warn("Custom token failed. Falling back to anonymous auth.", customTokenError);
             await signInAnonymously(auth);
           }
         } else {
@@ -197,9 +198,6 @@ export default function StallApp() {
     }
     
     const newId = Date.now().toString();
-    
-    // --- ADMIN CHECK LOGIC ---
-    // If the registered email matches the provided admin email, set role to 'admin', else 'user'
     const role = newUserEmail === 'kirstenmarc@outlook.de' ? 'admin' : 'user';
     
     const newUser = { 
@@ -211,7 +209,6 @@ export default function StallApp() {
       createdAt: new Date().toISOString() 
     };
     
-    // Optimistic Update
     setProfiles(prev => [...prev, newUser]);
     setCurrentUser(newUser);
     
@@ -221,8 +218,24 @@ export default function StallApp() {
       showToast('Registrierung erfolgreich!');
     }
     
-    // Firebase Sync
     await syncToFirebase('profiles', newId, newUser);
+  };
+
+  // NEW: Handle Password Change
+  const handlePasswordChange = async (e) => {
+    e.preventDefault();
+    if (newPassword.length < 6) {
+      showToast('Das Passwort muss mindestens 6 Zeichen lang sein!', true);
+      return;
+    }
+    // Update locally
+    const updatedUser = { ...currentUser, password: newPassword };
+    setCurrentUser(updatedUser);
+    setNewPassword('');
+    
+    // Update in Firebase
+    await syncToFirebase('profiles', currentUser.id, { password: newPassword });
+    showToast('Dein Passwort wurde erfolgreich geändert!');
   };
 
   const canEditHorse = (horse) => {
@@ -244,6 +257,13 @@ export default function StallApp() {
     showToast('Nachricht gepostet!');
 
     await syncToFirebase('messages', newId, msgData);
+  };
+
+  // NEW: Delete Message
+  const deleteMessage = async (id) => {
+    setMessages(prev => prev.filter(m => m.id !== id));
+    showToast('Nachricht gelöscht!');
+    await syncToFirebase('messages', id, null, true);
   };
 
   const resolveDamage = async (id) => {
@@ -542,7 +562,15 @@ export default function StallApp() {
                   <div key={m.id} className="bg-stone-50 border border-gray-300 p-3 rounded-xl shadow-sm">
                     <div className="flex justify-between items-baseline mb-1">
                       <span className="text-xs font-bold text-emerald-800">{m.author}</span>
-                      <span className="text-[10px] text-stone-500">{new Date(m.createdAt).toLocaleDateString('de-DE')}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] text-stone-500">{new Date(m.createdAt).toLocaleDateString('de-DE')}</span>
+                        {/* LÖSCHEN-BUTTON (Sichtbar für Admins oder den eigenen Autor) */}
+                        {(currentUser.role === 'admin' || m.author === currentUser.name) && (
+                          <button onClick={() => deleteMessage(m.id)} className="text-rose-600 hover:text-rose-800" title="Nachricht löschen">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <p className="text-sm text-black">{m.text}</p>
                   </div>
@@ -913,6 +941,19 @@ export default function StallApp() {
         {activeTab === 'mehr' && (
           <div className="space-y-5">
             
+            {/* NEW: Passwort ändern */}
+            <section className="bg-white border border-gray-300 rounded-2xl p-4 shadow-sm">
+              <h2 className="font-black text-emerald-900 text-lg mb-4 flex items-center gap-2 border-b border-emerald-100 pb-2"><ShieldCheck className="w-5 h-5"/> Mein Passwort ändern</h2>
+              <form onSubmit={handlePasswordChange} className="space-y-4">
+                <div>
+                   <label className="text-xs font-bold text-stone-600 mb-1 block">Neues Passwort festlegen</label>
+                   <input type="password" required value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Mindestens 6 Zeichen" className="w-full bg-white text-black border border-gray-300 rounded-xl px-3 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+                </div>
+                <button type="submit" className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-3.5 rounded-xl shadow-md transition-colors">Passwort speichern</button>
+              </form>
+              <p className="text-xs text-stone-500 mt-3">Nach dem Speichern ist dein neues Passwort direkt in der Datenbank gesichert und nicht mehr sichtbar.</p>
+            </section>
+
             {/* Formular: Vertretung */}
             <section className="bg-white border border-gray-300 rounded-2xl p-4 shadow-sm">
               <h2 className="font-black text-amber-900 text-lg mb-4 flex items-center gap-2 border-b border-amber-100 pb-2">Vertretung gesucht</h2>
