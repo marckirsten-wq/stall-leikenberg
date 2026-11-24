@@ -18,7 +18,8 @@ import {
   ShieldCheck,
   User,
   Info,
-  Camera
+  Camera,
+  Moon
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -48,18 +49,43 @@ try {
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'stall-app-default';
 
 // --- HELPER FUNCTIONS ---
-const getNext21Days = () => {
-  const dates = [];
-  const today = new Date();
-  for (let i = 0; i < 21; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    dates.push({
-      iso: d.toISOString().split('T')[0],
-      label: d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })
-    });
+// Neuer Helfer: Holt immer 4 Wochen, gebündelt Mo-So, mit korrekter KW
+const get4Weeks = () => {
+  const weeks = [];
+  const now = new Date();
+  
+  // Finde den Montag der aktuellen Woche
+  const dayOfWeek = now.getDay(); // 0 = Sonntag, 1 = Montag
+  const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const startOfThisWeek = new Date(now);
+  startOfThisWeek.setDate(now.getDate() + diffToMonday);
+  
+  // Helfer für die Kalenderwoche (ISO)
+  const getWeekNumber = (d) => {
+    const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const dayNum = date.getUTCDay() || 7;
+    date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+    return Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  };
+
+  for (let w = 0; w < 4; w++) {
+    const days = [];
+    const weekStart = new Date(startOfThisWeek);
+    weekStart.setDate(weekStart.getDate() + (w * 7));
+    const kw = getWeekNumber(weekStart);
+
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(d.getDate() + i);
+      days.push({
+        iso: d.toISOString().split('T')[0],
+        label: d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })
+      });
+    }
+    weeks.push({ kw, days });
   }
-  return dates;
+  return weeks;
 };
 
 export default function StallApp() {
@@ -87,7 +113,7 @@ export default function StallApp() {
   
   // --- Form States ---
   const [newMessage, setNewMessage] = useState('');
-  const [newPassword, setNewPassword] = useState(''); // NEW: Password Change State
+  const [newPassword, setNewPassword] = useState('');
   const [newBooking, setNewBooking] = useState({ type: 'Reitplatz', date: '', startTime: '', endTime: '', note: '' });
   const [newRequest, setNewRequest] = useState({ task: 'Misten', startDate: '', endDate: '', note: '' });
   const [newDamage, setNewDamage] = useState({ location: '', description: '' });
@@ -97,7 +123,7 @@ export default function StallApp() {
   const [selectedHorse, setSelectedHorse] = useState(null);
   const [horseFormData, setHorseFormData] = useState({
     name: '', feed: '', notes: '', image: '', vet: '', vetPhone: '', farrier: '', farrierPhone: '',
-    activeBlanketId: null, blankets: [], team: []
+    activeBlanketId: null, keepBlanketAtNight: false, blankets: [], team: []
   });
 
   // --- 1. FIREBASE AUTH ---
@@ -132,9 +158,7 @@ export default function StallApp() {
     
     const subscribe = (colName, setter) => {
       return onSnapshot(publicPath(colName), (snapshot) => {
-        if (!snapshot.empty) {
-          setter(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        }
+        setter(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       }, (err) => console.error(`Snapshot error on ${colName}:`, err));
     };
 
@@ -221,19 +245,16 @@ export default function StallApp() {
     await syncToFirebase('profiles', newId, newUser);
   };
 
-  // NEW: Handle Password Change
   const handlePasswordChange = async (e) => {
     e.preventDefault();
     if (newPassword.length < 6) {
       showToast('Das Passwort muss mindestens 6 Zeichen lang sein!', true);
       return;
     }
-    // Update locally
     const updatedUser = { ...currentUser, password: newPassword };
     setCurrentUser(updatedUser);
     setNewPassword('');
     
-    // Update in Firebase
     await syncToFirebase('profiles', currentUser.id, { password: newPassword });
     showToast('Dein Passwort wurde erfolgreich geändert!');
   };
@@ -259,7 +280,6 @@ export default function StallApp() {
     await syncToFirebase('messages', newId, msgData);
   };
 
-  // NEW: Delete Message
   const deleteMessage = async (id) => {
     setMessages(prev => prev.filter(m => m.id !== id));
     showToast('Nachricht gelöscht!');
@@ -324,6 +344,7 @@ export default function StallApp() {
       farrier: horseFormData.farrier || '',
       farrierPhone: horseFormData.farrierPhone || '',
       activeBlanketId: horseFormData.activeBlanketId || null,
+      keepBlanketAtNight: horseFormData.activeBlanketId ? Boolean(horseFormData.keepBlanketAtNight) : false,
       blankets: (horseFormData.blankets || []).map(b => ({ id: b.id, name: b.name || '', description: b.description || '' })),
       team: (horseFormData.team || []).map(t => ({ id: t.id, role: t.role || '', name: t.name || '', phone: t.phone || '' })),
       createdAt: horseFormData.createdAt || new Date().toISOString()
@@ -352,9 +373,19 @@ export default function StallApp() {
 
   const toggleBlanket = async (horseId, blanketId) => {
     const newVal = blanketId === "" ? null : blanketId;
-    setHorses(prev => prev.map(h => h.id === horseId ? { ...h, activeBlanketId: newVal } : h));
+    const updates = newVal === null
+      ? { activeBlanketId: null, keepBlanketAtNight: false }
+      : { activeBlanketId: newVal };
+    setHorses(prev => prev.map(h => h.id === horseId ? { ...h, ...updates } : h));
     showToast('Decke aktualisiert!');
-    await syncToFirebase('horses', horseId, { activeBlanketId: newVal });
+    await syncToFirebase('horses', horseId, updates);
+  };
+
+  const toggleNightBlanket = async (horseId, currentVal) => {
+    const newVal = !currentVal;
+    setHorses(prev => prev.map(h => h.id === horseId ? { ...h, keepBlanketAtNight: newVal } : h));
+    showToast(newVal ? 'Decke bleibt nachts an!' : 'Decke wird abends abgenommen!');
+    await syncToFirebase('horses', horseId, { keepBlanketAtNight: newVal });
   };
 
   const addShift = async (date, type) => {
@@ -421,6 +452,9 @@ export default function StallApp() {
   
   const sortedHorses = [...horses].sort((a, b) => a.name.localeCompare(b.name));
   const blanketHorses = sortedHorses.filter(h => h.activeBlanketId);
+  const nightBlanketHorses = blanketHorses.filter(h => h.keepBlanketAtNight);
+
+  const weeksData = get4Weeks();
 
   // --- RENDER LOGIN ---
   if (!currentUser) {
@@ -537,17 +571,44 @@ export default function StallApp() {
                 {blanketHorses.length === 0 ? <p className="text-sm">Aktuell keine Decken nötig.</p> : (
                   <ul className="space-y-2 mt-3">
                     {blanketHorses.map(h => (
-                      <li key={h.id} className="flex items-center gap-2 bg-emerald-900 p-2 rounded-xl border border-emerald-700">
-                        <span className="text-sm font-bold flex-1">{h.name}</span>
-                        <span className="text-xs text-amber-300 font-bold">{(h.blankets||[]).find(b=>b.id === h.activeBlanketId)?.name}</span>
+                      <li key={h.id} className="flex items-center justify-between gap-2 bg-emerald-900 p-2 rounded-xl border border-emerald-700">
+                        <span className="text-sm font-bold">{h.name}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-amber-300 font-bold">{(h.blankets||[]).find(b=>b.id === h.activeBlanketId)?.name}</span>
+                          {h.keepBlanketAtNight && (
+                            <span className="text-[10px] bg-indigo-950 text-indigo-200 border border-indigo-500 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                              <Moon className="w-3 h-3"/> + Nacht
+                            </span>
+                          )}
+                        </div>
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
+
               <div className="bg-stone-800 text-white border border-stone-900 rounded-2xl p-4 shadow-md">
                 <h3 className="font-extrabold flex items-center gap-2 mb-2"><CheckCircle className="w-5 h-5"/> Abenddienst (Decken AUS)</h3>
-                <p className="text-sm">Bitte alle Paddock-Decken bei den Pferden abnehmen und ordentlich aufhängen.</p>
+                {nightBlanketHorses.length > 0 ? (
+                  <div className="space-y-3 mt-2">
+                    <div className="bg-indigo-950 border border-indigo-400 rounded-xl p-3">
+                      <p className="text-xs font-extrabold uppercase tracking-wide text-indigo-200 flex items-center gap-1.5 mb-2">
+                        <Moon className="w-4 h-4 text-amber-300"/> Decke nachts ANLASSEN (nicht abnehmen):
+                      </p>
+                      <ul className="space-y-1.5">
+                        {nightBlanketHorses.map(h => (
+                          <li key={h.id} className="flex items-center justify-between bg-indigo-900/70 px-2.5 py-1.5 rounded-lg text-sm">
+                            <span className="font-extrabold text-white">{h.name}</span>
+                            <span className="text-xs font-bold text-amber-300">{(h.blankets||[]).find(b=>b.id === h.activeBlanketId)?.name}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <p className="text-sm text-stone-200">Bei allen anderen eingedeckten Pferden die Paddock-Decken abnehmen und ordentlich aufhängen.</p>
+                  </div>
+                ) : (
+                  <p className="text-sm">Bitte alle Paddock-Decken bei den Pferden abnehmen und ordentlich aufhängen.</p>
+                )}
               </div>
             </div>
 
@@ -564,12 +625,9 @@ export default function StallApp() {
                       <span className="text-xs font-bold text-emerald-800">{m.author}</span>
                       <div className="flex items-center gap-3">
                         <span className="text-[10px] text-stone-500">{new Date(m.createdAt).toLocaleDateString('de-DE')}</span>
-                        {/* LÖSCHEN-BUTTON (Sichtbar für Admins oder den eigenen Autor) */}
-                        {(currentUser.role === 'admin' || m.author === currentUser.name) && (
-                          <button onClick={() => deleteMessage(m.id)} className="text-rose-600 hover:text-rose-800" title="Nachricht löschen">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <button onClick={() => deleteMessage(m.id)} className="text-rose-600 hover:text-rose-800 p-0.5" title="Nachricht löschen">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                     <p className="text-sm text-black">{m.text}</p>
@@ -589,7 +647,7 @@ export default function StallApp() {
             {!isEditingHorse && !selectedHorse && (
               <>
                 <button onClick={() => {
-                  setHorseFormData({ name: '', feed: '', notes: '', image: '', vet: '', vetPhone: '', farrier: '', farrierPhone: '', activeBlanketId: null, blankets: [{ id: Date.now().toString(), name: 'Regendecke', description: '' }], team: [{ id: Date.now().toString(), name: currentUser.name, role: 'Besitzer', phone: '' }] });
+                  setHorseFormData({ name: '', feed: '', notes: '', image: '', vet: '', vetPhone: '', farrier: '', farrierPhone: '', activeBlanketId: null, keepBlanketAtNight: false, blankets: [{ id: Date.now().toString(), name: 'Regendecke', description: '' }], team: [{ id: Date.now().toString(), name: currentUser.name, role: 'Besitzer', phone: '' }] });
                   setIsEditingHorse(true);
                 }} className="w-full bg-emerald-700 hover:bg-emerald-800 transition-colors text-white font-bold py-3.5 rounded-2xl shadow-md flex items-center justify-center gap-2">
                   <Plus className="w-5 h-5" /> Neues Pferd anlegen
@@ -609,19 +667,50 @@ export default function StallApp() {
                         </div>
                         <span className="text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-lg text-xs font-bold">Akte ansehen →</span>
                       </div>
-                      <div className="mt-2 pt-2 border-t border-gray-200" onClick={e => e.stopPropagation()}>
-                        <label className="text-[10px] uppercase font-bold text-stone-500 block mb-1">Decke für heute:</label>
-                        {canEditHorse(h) ? (
-                          <select value={h.activeBlanketId || ''} onChange={e => toggleBlanket(h.id, e.target.value)} className="w-full bg-white text-black border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600 font-bold">
-                            <option value="">🚫 Keine Decke anziehen</option>
-                            {(h.blankets || []).map(b => (
-                              <option key={b.id} value={b.id}>🧥 {b.name} {b.description && `(${b.description})`}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <div className="w-full bg-stone-100 text-stone-700 border border-gray-300 text-sm rounded-xl px-3 py-2 font-bold flex items-center gap-2">
-                            {h.activeBlanketId ? `🧥 ${(h.blankets || []).find(b=>b.id === h.activeBlanketId)?.name}` : '🚫 Keine Decke'}
-                          </div>
+                      <div className="mt-2 pt-2 border-t border-gray-200 space-y-2.5" onClick={e => e.stopPropagation()}>
+                        <div>
+                          <label className="text-[10px] uppercase font-bold text-stone-500 block mb-1">Decke für heute:</label>
+                          {canEditHorse(h) ? (
+                            <select value={h.activeBlanketId || ''} onChange={e => toggleBlanket(h.id, e.target.value)} className="w-full bg-white text-black border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600 font-bold">
+                              <option value="">🚫 Keine Decke anziehen</option>
+                              {(h.blankets || []).map(b => (
+                                <option key={b.id} value={b.id}>🧥 {b.name} {b.description && `(${b.description})`}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <div className="w-full bg-stone-100 text-stone-700 border border-gray-300 text-sm rounded-xl px-3 py-2 font-bold flex items-center gap-2">
+                              {h.activeBlanketId ? `🧥 ${(h.blankets || []).find(b=>b.id === h.activeBlanketId)?.name}` : '🚫 Keine Decke'}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* SCHALTER: Decke nachts anlassen */}
+                        {h.activeBlanketId && (
+                          canEditHorse(h) ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleNightBlanket(h.id, h.keepBlanketAtNight)}
+                              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl border text-xs font-bold transition-colors ${
+                                h.keepBlanketAtNight
+                                  ? 'bg-indigo-900 text-white border-indigo-950 shadow-sm'
+                                  : 'bg-stone-50 text-stone-700 border-gray-300 hover:bg-stone-100'
+                              }`}
+                            >
+                              <span className="flex items-center gap-2">
+                                <Moon className={`w-4 h-4 ${h.keepBlanketAtNight ? 'text-amber-300' : 'text-stone-500'}`} />
+                                Decke nachts anlassen
+                              </span>
+                              <span className={`w-10 h-5 flex items-center rounded-full p-0.5 transition-colors ${h.keepBlanketAtNight ? 'bg-amber-400' : 'bg-stone-300'}`}>
+                                <span className={`bg-white w-4 h-4 rounded-full shadow transform transition-transform ${h.keepBlanketAtNight ? 'translate-x-5' : 'translate-x-0'}`} />
+                              </span>
+                            </button>
+                          ) : (
+                            h.keepBlanketAtNight && (
+                              <div className="w-full bg-indigo-50 text-indigo-900 border border-indigo-200 text-xs rounded-xl px-3 py-2 font-bold flex items-center gap-2">
+                                <Moon className="w-4 h-4 text-indigo-700"/> Decke bleibt nachts an
+                              </div>
+                            )
+                          )
                         )}
                       </div>
                     </div>
@@ -657,7 +746,11 @@ export default function StallApp() {
                       </div>
                       <div className="bg-white text-black border border-gray-300 p-3 rounded-xl shadow-sm">
                         <span className="text-[10px] uppercase font-bold text-emerald-700 block mb-1">Aktuelle Decke</span>
-                        <p className="text-sm font-bold">{selectedHorse.activeBlanketId ? (selectedHorse.blankets||[]).find(b=>b.id === selectedHorse.activeBlanketId)?.name : '🚫 Keine Decke'}</p>
+                        <p className="text-sm font-bold">
+                          {selectedHorse.activeBlanketId
+                            ? `${(selectedHorse.blankets||[]).find(b=>b.id === selectedHorse.activeBlanketId)?.name}${selectedHorse.keepBlanketAtNight ? ' (🌙 bleibt nachts an)' : ''}`
+                            : '🚫 Keine Decke'}
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -838,13 +931,13 @@ export default function StallApp() {
             {/* Sub-Tab: Dienste */}
             {planSubTab === 'dienste' && (
               <>
-                <div className="grid grid-cols-3 gap-2">
-                  {[0,1,2].map(w => (
-                    <button key={w} onClick={()=>setSelectedWeek(w)} className={`py-2 rounded-xl text-sm font-bold border transition-colors ${selectedWeek === w ? 'bg-emerald-800 text-white border-emerald-900 shadow-md' : 'bg-white text-black border-gray-300 shadow-sm hover:bg-stone-50'}`}>Woche {w+1}</button>
+                <div className="grid grid-cols-4 gap-2">
+                  {weeksData.map((week, idx) => (
+                    <button key={idx} onClick={()=>setSelectedWeek(idx)} className={`py-2 rounded-xl text-xs sm:text-sm font-bold border transition-colors ${selectedWeek === idx ? 'bg-emerald-800 text-white border-emerald-900 shadow-md' : 'bg-white text-black border-gray-300 shadow-sm hover:bg-stone-50'}`}>KW {week.kw}</button>
                   ))}
                 </div>
-                <div className="space-y-3">
-                  {getNext21Days().slice(selectedWeek * 7, (selectedWeek + 1) * 7).map(day => {
+                <div className="space-y-3 mt-3">
+                  {weeksData[selectedWeek]?.days.map(day => {
                     const amShifts = shifts.filter(s => s.date === day.iso && s.type === 'am');
                     const pmShifts = shifts.filter(s => s.date === day.iso && s.type === 'pm');
                     
@@ -941,7 +1034,7 @@ export default function StallApp() {
         {activeTab === 'mehr' && (
           <div className="space-y-5">
             
-            {/* NEW: Passwort ändern */}
+            {/* Passwort ändern */}
             <section className="bg-white border border-gray-300 rounded-2xl p-4 shadow-sm">
               <h2 className="font-black text-emerald-900 text-lg mb-4 flex items-center gap-2 border-b border-emerald-100 pb-2"><ShieldCheck className="w-5 h-5"/> Mein Passwort ändern</h2>
               <form onSubmit={handlePasswordChange} className="space-y-4">
