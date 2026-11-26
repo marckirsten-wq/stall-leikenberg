@@ -124,6 +124,7 @@ export default function StallApp() {
   const [planSubTab, setPlanSubTab] = useState('dienste');
   const [selectedWeek, setSelectedWeek] = useState(0);
   const [toast, setToast] = useState(null);
+  const [shiftPickerSlot, setShiftPickerSlot] = useState(null); // { date, type, label }
   
   // --- Form States ---
   const [newMessage, setNewMessage] = useState('');
@@ -444,12 +445,46 @@ export default function StallApp() {
     await syncToFirebase('horses', horseId, updates);
   };
 
-  const addShift = async (date, type) => {
+  // --- DIENSTPLAN: PFERDE-AUSWAHL & EINTRAGEN ---
+  const addShift = async (date, type, horse = null) => {
     const newId = Date.now().toString();
-    const shiftData = { id: newId, date, type, userId: currentUser.id, userName: currentUser.name };
+    const shiftData = {
+      id: newId,
+      date,
+      type,
+      userId: currentUser.id,
+      userName: currentUser.name,
+      horseId: horse ? horse.id : null,
+      horseName: horse ? horse.name : null
+    };
     setShifts(prev => [...prev, shiftData]);
-    showToast('Erfolgreich eingetragen!');
+    setShiftPickerSlot(null);
+    showToast(horse ? `Dienst für ${horse.name} eingetragen!` : 'Erfolgreich eingetragen!');
     await syncToFirebase('shifts', newId, shiftData);
+  };
+
+  const handleOpenShiftPicker = (date, type, label) => {
+    const myHorses = sortedHorses.filter(h => canEditHorse(h));
+    if (myHorses.length === 0) {
+      addShift(date, type, null);
+      return;
+    }
+    if (myHorses.length === 1 && currentUser.role !== 'admin') {
+      addShift(date, type, myHorses[0]);
+      return;
+    }
+    setShiftPickerSlot({ date, type, label });
+  };
+
+  const canRemoveShift = (shift) => {
+    if (!currentUser) return false;
+    if (currentUser.role === 'admin') return true;
+    if (shift.userId === currentUser.id) return true;
+    if (shift.horseId) {
+      const horse = horses.find(h => h.id === shift.horseId);
+      if (horse && canEditHorse(horse)) return true;
+    }
+    return false;
   };
 
   const removeShift = async (shiftId) => {
@@ -507,6 +542,7 @@ export default function StallApp() {
   const hasNotifications = openDamages.length > 0 || openRequests.length > 0;
   
   const sortedHorses = [...horses].sort((a, b) => a.name.localeCompare(b.name));
+  const eligibleShiftHorses = sortedHorses.filter(h => canEditHorse(h));
   const blanketHorses = sortedHorses.filter(h => h.activeBlanketId);
   const nightBlanketHorses = sortedHorses.filter(h => getNightBlanketId(h));
   const nightOnlyHorses = sortedHorses.filter(h => !h.activeBlanketId && getNightBlanketId(h));
@@ -582,6 +618,73 @@ export default function StallApp() {
         <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-full shadow-2xl font-bold text-sm text-white flex items-center gap-2 transition-all ${toast.isError ? 'bg-rose-600' : 'bg-emerald-600'}`}>
           {toast.isError ? <AlertTriangle className="w-5 h-5"/> : <CheckCircle className="w-5 h-5"/>}
           {toast.msg}
+        </div>
+      )}
+
+      {/* MODAL: PFERD FÜR DIENST AUSWÄHLEN */}
+      {shiftPickerSlot && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4"
+          onClick={() => setShiftPickerSlot(null)}
+        >
+          <div
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-stone-300 space-y-4"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-start border-b border-gray-200 pb-3">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 block">
+                  {shiftPickerSlot.type === 'am' ? 'Morgendienst' : 'Abenddienst'} • {shiftPickerSlot.label}
+                </span>
+                <h3 className="text-lg font-black text-black mt-0.5">Für welches Pferd?</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShiftPickerSlot(null)}
+                className="bg-stone-100 text-stone-600 p-1.5 rounded-xl border border-gray-300 hover:bg-stone-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {eligibleShiftHorses.map(h => (
+                <button
+                  key={h.id}
+                  type="button"
+                  onClick={() => addShift(shiftPickerSlot.date, shiftPickerSlot.type, h)}
+                  className="w-full flex items-center justify-between p-3 rounded-2xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-left transition-colors shadow-sm"
+                >
+                  <div className="flex items-center gap-3">
+                    {h.image ? (
+                      <img src={h.image} alt={h.name} className="w-10 h-10 rounded-full object-cover border border-emerald-300" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-emerald-800 text-white font-black text-sm flex items-center justify-center">
+                        {h.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div>
+                      <span className="font-extrabold text-sm text-emerald-950 block">{h.name}</span>
+                      <span className="text-[11px] text-emerald-700 font-medium">
+                        Eintrag durch {currentUser.name}
+                      </span>
+                    </div>
+                  </div>
+                  <Plus className="w-5 h-5 text-emerald-800 shrink-0" />
+                </button>
+              ))}
+            </div>
+
+            <div className="pt-2 border-t border-gray-200">
+              <button
+                type="button"
+                onClick={() => addShift(shiftPickerSlot.date, shiftPickerSlot.type, null)}
+                className="w-full py-2.5 px-3 rounded-xl bg-stone-100 hover:bg-stone-200 border border-gray-300 text-xs font-bold text-stone-700 transition-colors"
+              >
+                Ohne Pferd eintragen (nur {currentUser.name})
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1075,13 +1178,26 @@ export default function StallApp() {
                         if (s) {
                           slots.push(
                             <div key={s.id} className="flex justify-between items-center text-xs font-bold p-2 mb-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-900 shadow-sm">
-                              <span>{s.userName}</span>
-                              {s.userId === currentUser.id && <button onClick={()=>removeShift(s.id)} className="text-rose-600 bg-white border border-rose-200 rounded px-1.5 py-0.5 hover:bg-rose-100"><X className="w-3 h-3"/></button>}
+                              <div className="min-w-0 pr-1">
+                                {s.horseName ? (
+                                  <>
+                                    <span className="font-black text-emerald-950 block truncate">{s.horseName}</span>
+                                    <span className="text-[10px] font-medium text-emerald-700 block truncate">{s.userName}</span>
+                                  </>
+                                ) : (
+                                  <span className="truncate block">{s.userName}</span>
+                                )}
+                              </div>
+                              {canRemoveShift(s) && (
+                                <button onClick={()=>removeShift(s.id)} className="text-rose-600 bg-white border border-rose-200 rounded px-1.5 py-0.5 hover:bg-rose-100 shrink-0">
+                                  <X className="w-3 h-3"/>
+                                </button>
+                              )}
                             </div>
                           );
                         } else {
                           slots.push(
-                            <button key={`empty-${i}`} onClick={()=>addShift(day.iso, type)} className="w-full text-left text-xs font-bold text-emerald-700 bg-white border border-gray-300 p-2 mb-1.5 rounded-lg flex items-center justify-between shadow-sm hover:border-emerald-500 transition-colors">
+                            <button key={`empty-${i}`} onClick={()=>handleOpenShiftPicker(day.iso, type, day.label)} className="w-full text-left text-xs font-bold text-emerald-700 bg-white border border-gray-300 p-2 mb-1.5 rounded-lg flex items-center justify-between shadow-sm hover:border-emerald-500 transition-colors">
                               <span>Frei</span><Plus className="w-4 h-4"/>
                             </button>
                           );
