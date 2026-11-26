@@ -657,10 +657,10 @@ export default function StallApp() {
                 >
                   <div className="flex items-center gap-3">
                     {h.image ? (
-                      <img src={h.image} alt={h.name} className="w-10 h-10 rounded-full object-cover border border-emerald-300" />
+                      <img src={h.image} alt={h.name} className="w-10 h-10 rounded-full object-cover border border-emerald-300 shrink-0" />
                     ) : (
-                      <div className="w-10 h-10 rounded-full bg-emerald-800 text-white font-black text-sm flex items-center justify-center">
-                        {h.name.charAt(0).toUpperCase()}
+                      <div className="w-10 h-10 rounded-full bg-emerald-800 text-white text-base flex items-center justify-center shrink-0">
+                        🐴
                       </div>
                     )}
                     <div>
@@ -1176,13 +1176,25 @@ export default function StallApp() {
                       for(let i=0; i<max; i++) {
                         const s = currentShifts[i];
                         if (s) {
+                          const matchedHorse = s.horseId
+                            ? horses.find(h => h.id === s.horseId)
+                            : (s.horseName ? horses.find(h => (h.name || '').trim().toLowerCase() === s.horseName.trim().toLowerCase()) : null);
                           slots.push(
                             <div key={s.id} className="flex justify-between items-center text-xs font-bold p-2 mb-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-900 shadow-sm">
-                              <div className="min-w-0 pr-1">
+                              <div className="flex items-center gap-2 min-w-0 pr-1">
                                 {s.horseName ? (
                                   <>
-                                    <span className="font-black text-emerald-950 block truncate">{s.horseName}</span>
-                                    <span className="text-[10px] font-medium text-emerald-700 block truncate">{s.userName}</span>
+                                    {matchedHorse?.image ? (
+                                      <img src={matchedHorse.image} alt={s.horseName} className="w-7 h-7 rounded-full object-cover border border-emerald-400 shrink-0" />
+                                    ) : (
+                                      <div className="w-7 h-7 rounded-full bg-emerald-800 text-white text-xs flex items-center justify-center shrink-0">
+                                        🐴
+                                      </div>
+                                    )}
+                                    <div className="min-w-0">
+                                      <span className="font-black text-emerald-950 block truncate">{s.horseName}</span>
+                                      <span className="text-[10px] font-medium text-emerald-700 block truncate">{s.userName}</span>
+                                    </div>
                                   </>
                                 ) : (
                                   <span className="truncate block">{s.userName}</span>
